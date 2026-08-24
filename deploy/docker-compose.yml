@@ -1,0 +1,60 @@
+name: orca-dev
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: orca-postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-orca}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-orca}
+      POSTGRES_DB: orca
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U orca -d orca"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: orca-redis
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.8-alpine
+    container_name: orca-clickhouse
+    environment:
+      CLICKHOUSE_USER: orca
+      CLICKHOUSE_PASSWORD: orca
+      CLICKHOUSE_DB: orca_telemetry
+    ports:
+      - "8123:8123"
+      - "9000:9000"
+    volumes:
+      - chdata:/var/lib/clickhouse
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:8123/ping || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  pgdata:
+  redisdata:
+  chdata:
+
+networks:
+  default:
+    name: orca-net
