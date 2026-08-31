@@ -21,7 +21,7 @@ func NewRouter(apiKeys []string, registry *provider.Registry) http.Handler {
 	v1 := chi.NewRouter()
 	v1.Use(RequireBearerKey(apiKeys))
 	v1.Post("/chat/completions", handleChatCompletions(registry))
-	v1.Get("/models", handleListModels)
+	v1.Get("/models", handleListModels(registry))
 	r.Mount("/v1", v1)
 
 	return r

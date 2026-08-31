@@ -185,13 +185,13 @@ type modelList struct {
 	Data   []modelEntry `json:"data"`
 }
 
-func handleListModels(w http.ResponseWriter, _ *http.Request) {
-	now := time.Now().Unix()
-	writeJSON(w, http.StatusOK, modelList{
-		Object: "list",
-		Data: []modelEntry{
-			{ID: "orca-fast", Object: "model", Created: now, OwnedBy: "orca"},
-			{ID: "orca-smart", Object: "model", Created: now, OwnedBy: "orca"},
-		},
-	})
+func handleListModels(registry *provider.Registry) http.HandlerFunc {
+	return func(w http.ResponseWriter, _ *http.Request) {
+		now := time.Now().Unix()
+		data := make([]modelEntry, 0, len(registry.Models()))
+		for _, m := range registry.Models() {
+			data = append(data, modelEntry{ID: m, Object: "model", Created: now, OwnedBy: "orca"})
+		}
+		writeJSON(w, http.StatusOK, modelList{Object: "list", Data: data})
+	}
 }
