@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 )
 
@@ -36,4 +37,31 @@ func (f *failoverProvider) ProviderNames() []string {
 		names[i] = p.Name()
 	}
 	return names
+}
+
+func (f *failoverProvider) Stream(ctx context.Context, req *CompletionRequest, emit func(StreamChunk) error) error {
+	var errs []error
+	for _, p := range f.providers {
+		s, ok := p.(Streamer)
+		if !ok {
+			err := fmt.Errorf("provider %q does not support streaming", p.Name())
+			errs = append(errs, err)
+			slog.Warn("provider does not support streaming, trying fallback",
+				"provider", p.Name(),
+				"model", req.Model)
+			continue
+		}
+		slog.Debug("streaming via provider", "provider", p.Name(), "model", req.Model)
+		err := s.Stream(ctx, req, emit)
+		if err == nil {
+			return nil
+		}
+		errs = append(errs, err)
+		slog.Warn("provider stream failed, trying fallback",
+			"provider", p.Name(),
+			"model", req.Model,
+			"err", err,
+			"fallbacks_remaining", len(f.providers)-len(errs))
+	}
+	return errors.Join(errs...)
 }
