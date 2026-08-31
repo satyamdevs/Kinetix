@@ -84,6 +84,21 @@ type openaiErrorResponse struct {
 	} `json:"error"`
 }
 
+type openaiStreamChoice struct {
+	Index        int    `json:"index"`
+	Delta        struct {
+		Content string `json:"content"`
+	} `json:"delta"`
+	FinishReason *string `json:"finish_reason"`
+}
+
+type openaiStreamChunk struct {
+	ID      string              `json:"id"`
+	Object  string              `json:"object"`
+	Model   string              `json:"model"`
+	Choices []openaiStreamChoice `json:"choices"`
+}
+
 func (a *adapter) Complete(ctx context.Context, req *provider.CompletionRequest) (*provider.CompletionResponse, error) {
 	oaiReq := openaiRequest{
 		Model:    req.Model,
@@ -160,4 +175,83 @@ func (a *adapter) Complete(ctx context.Context, req *provider.CompletionRequest)
 
 	slog.Debug("openai response", "id", resp.ID, "model", resp.Model, "tokens", resp.Usage.TotalTokens)
 	return resp, nil
+}
+
+func (a *adapter) Stream(ctx context.Context, req *provider.CompletionRequest, emit func(provider.StreamChunk) error) error {
+	oaiReq := openaiRequest{
+		Model:    req.Model,
+		Stream:   true,
+		Messages: make([]openaiMessage, len(req.Messages)),
+	}
+	for i, m := range req.Messages {
+		oaiReq.Messages[i] = openaiMessage{Role: m.Role, Content: m.Content}
+	}
+	if req.Temperature > 0 {
+		oaiReq.Temperature = req.Temperature
+	}
+	if req.MaxTokens > 0 {
+		oaiReq.MaxTokens = req.MaxTokens
+	}
+
+	body, err := json.Marshal(oaiReq)
+	if err != nil {
+		return fmt.Errorf("marshal openai request: %w", err)
+	}
+
+	url := a.cfg.BaseURL + "/chat/completions"
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("create http request: %w", err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Authorization", "Bearer "+a.cfg.APIKey)
+
+	slog.Debug("openai stream request", "model", req.Model, "url", url)
+
+	httpResp, err := a.client.Do(httpReq)
+	if err != nil {
+		return fmt.Errorf("openai stream request failed: %w", err)
+	}
+	defer httpResp.Body.Close()
+
+	if httpResp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(httpResp.Body)
+		var oaiErr openaiErrorResponse
+		if json.Unmarshal(respBody, &oaiErr) == nil && oaiErr.Error.Message != "" {
+			return fmt.Errorf("openai api error (%s): %s", oaiErr.Error.Type, oaiErr.Error.Message)
+		}
+		return fmt.Errorf("openai api returned status %d: %s", httpResp.StatusCode, string(respBody))
+	}
+
+	var id, model string
+	return provider.ForEachSSE(httpResp.Body, func(data string) error {
+		if data == "[DONE]" {
+			return io.EOF
+		}
+		var chunk openaiStreamChunk
+		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
+			return fmt.Errorf("unmarshal openai stream chunk: %w", err)
+		}
+		if id == "" {
+			id = chunk.ID
+		}
+		if model == "" {
+			model = chunk.Model
+		}
+		if len(chunk.Choices) == 0 {
+			return nil
+		}
+		c := chunk.Choices[0]
+		finish := ""
+		if c.FinishReason != nil {
+			finish = *c.FinishReason
+		}
+		return emit(provider.StreamChunk{
+			ID:     id,
+			Model:  model,
+			Index:  c.Index,
+			Delta:  c.Delta.Content,
+			Finish: finish,
+		})
+	})
 }
