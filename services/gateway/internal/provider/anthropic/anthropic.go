@@ -69,12 +69,12 @@ type anthropicMessage struct {
 }
 
 type anthropicResponse struct {
-	ID      string            `json:"id"`
-	Type    string            `json:"type"`
-	Model   string            `json:"model"`
-	Role    string            `json:"role"`
-	Content []anthropicBlock  `json:"content"`
-	Usage   anthropicUsage    `json:"usage"`
+	ID      string           `json:"id"`
+	Type    string           `json:"type"`
+	Model   string           `json:"model"`
+	Role    string           `json:"role"`
+	Content []anthropicBlock `json:"content"`
+	Usage   anthropicUsage   `json:"usage"`
 }
 
 type anthropicBlock struct {
@@ -209,8 +209,8 @@ func (a *adapter) Complete(ctx context.Context, req *provider.CompletionRequest)
 	}
 
 	resp := &provider.CompletionResponse{
-		ID:     anthropicResp.ID,
-		Model:  anthropicResp.Model,
+		ID:    anthropicResp.ID,
+		Model: anthropicResp.Model,
 		Choices: []provider.Choice{{
 			Index:        0,
 			Message:      provider.Message{Role: assistantRole, Content: text.String()},

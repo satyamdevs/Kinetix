@@ -43,11 +43,11 @@ func New(cfg Config) provider.Provider {
 func (a *adapter) Name() string { return "ollama" }
 
 type ollamaRequest struct {
-	Model       string           `json:"model"`
+	Model       string             `json:"model"`
 	Messages    []provider.Message `json:"messages"`
-	Stream      bool             `json:"stream"`
-	Temperature float64          `json:"temperature,omitempty"`
-	MaxTokens   int              `json:"max_completion_tokens,omitempty"`
+	Stream      bool               `json:"stream"`
+	Temperature float64            `json:"temperature,omitempty"`
+	MaxTokens   int                `json:"max_completion_tokens,omitempty"`
 }
 
 type ollamaResponse struct {

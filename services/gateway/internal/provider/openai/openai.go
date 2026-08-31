@@ -44,11 +44,11 @@ func New(cfg Config) provider.Provider {
 func (a *adapter) Name() string { return "openai" }
 
 type openaiRequest struct {
-	Model       string            `json:"model"`
-	Messages    []openaiMessage   `json:"messages"`
-	Stream      bool              `json:"stream"`
-	Temperature float64           `json:"temperature,omitempty"`
-	MaxTokens   int               `json:"max_tokens,omitempty"`
+	Model       string          `json:"model"`
+	Messages    []openaiMessage `json:"messages"`
+	Stream      bool            `json:"stream"`
+	Temperature float64         `json:"temperature,omitempty"`
+	MaxTokens   int             `json:"max_tokens,omitempty"`
 }
 
 type openaiMessage struct {
@@ -65,9 +65,9 @@ type openaiResponse struct {
 }
 
 type openaiChoice struct {
-	Index        int              `json:"index"`
-	Message      openaiMessage    `json:"message"`
-	FinishReason string           `json:"finish_reason"`
+	Index        int           `json:"index"`
+	Message      openaiMessage `json:"message"`
+	FinishReason string        `json:"finish_reason"`
 }
 
 type openaiUsage struct {
@@ -85,17 +85,17 @@ type openaiErrorResponse struct {
 }
 
 type openaiStreamChoice struct {
-	Index        int    `json:"index"`
-	Delta        struct {
+	Index int `json:"index"`
+	Delta struct {
 		Content string `json:"content"`
 	} `json:"delta"`
 	FinishReason *string `json:"finish_reason"`
 }
 
 type openaiStreamChunk struct {
-	ID      string              `json:"id"`
-	Object  string              `json:"object"`
-	Model   string              `json:"model"`
+	ID      string               `json:"id"`
+	Object  string               `json:"object"`
+	Model   string               `json:"model"`
 	Choices []openaiStreamChoice `json:"choices"`
 }
 
