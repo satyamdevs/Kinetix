@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"time"
+
+	"orca/gateway/internal/provider"
 )
 
 type apiErrorBody struct {
@@ -75,47 +77,100 @@ type chatCompletion struct {
 	Usage             usage    `json:"usage"`
 }
 
-func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
-	var req chatRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "Invalid JSON body: "+err.Error(), "invalid_request_error", "invalid_body")
-		return
-	}
+func handleChatCompletions(registry *provider.Registry) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var req chatRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, "Invalid JSON body: "+err.Error(), "invalid_request_error", "invalid_body")
+			return
+		}
 
-	if req.Stream {
-		writeError(w, http.StatusNotImplemented,
-			"Streaming is not implemented yet; retry with \"stream\": false",
-			"api_error", "streaming_not_implemented")
-		return
-	}
+		if req.Stream {
+			writeError(w, http.StatusNotImplemented,
+				"Streaming is not implemented yet; retry with \"stream\": false",
+				"api_error", "streaming_not_implemented")
+			return
+		}
 
-	model := req.Model
-	if model == "" {
-		model = "orca-fast"
-	}
+		model := req.Model
+		if model == "" {
+			writeError(w, http.StatusBadRequest,
+				"The \"model\" field is required.",
+				"invalid_request_error", "missing_model")
+			return
+		}
 
-	promptTokens := len(req.Messages) * 8
-	resp := chatCompletion{
-		ID:                "chatcmpl-mock-" + randomID(),
-		Object:            "chat.completion",
-		Created:           time.Now().Unix(),
-		Model:             model,
-		SystemFingerprint: "orca_mock_v1",
-		Choices: []choice{{
-			Index: 0,
-			Message: choiceMessage{
-				Role:    "assistant",
-				Content: "This is a mock completion from Orca gateway.",
+		p, err := registry.Lookup(model)
+		if err != nil {
+			writeError(w, http.StatusBadRequest,
+				err.Error(),
+				"invalid_request_error", "unknown_model")
+			return
+		}
+
+		internalReq := &provider.CompletionRequest{
+			Model:    model,
+			Messages: make([]provider.Message, len(req.Messages)),
+		}
+		for i, m := range req.Messages {
+			txt := ""
+			if len(m.Content) > 0 {
+				_ = json.Unmarshal(m.Content, &txt)
+				if txt == "" {
+					var parts []string
+					if json.Unmarshal(m.Content, &parts) == nil {
+						txt = joinStringParts(parts)
+					}
+				}
+			}
+			internalReq.Messages[i] = provider.Message{Role: m.Role, Content: txt}
+		}
+
+		resp, err := p.Complete(r.Context(), internalReq)
+		if err != nil {
+			writeError(w, http.StatusBadGateway,
+				"Upstream provider error: "+err.Error(),
+				"api_error", "upstream_error")
+			return
+		}
+
+		out := chatCompletion{
+			ID:                resp.ID,
+			Object:            "chat.completion",
+			Created:           time.Now().Unix(),
+			Model:             resp.Model,
+			SystemFingerprint: resp.SystemFingerprint,
+			Choices:           make([]choice, len(resp.Choices)),
+			Usage: usage{
+				PromptTokens:     resp.Usage.PromptTokens,
+				CompletionTokens: resp.Usage.CompletionTokens,
+				TotalTokens:      resp.Usage.TotalTokens,
 			},
-			FinishReason: "stop",
-		}},
-		Usage: usage{
-			PromptTokens:     promptTokens,
-			CompletionTokens: 9,
-			TotalTokens:      promptTokens + 9,
-		},
+		}
+		for i, c := range resp.Choices {
+			out.Choices[i] = choice{
+				Index: c.Index,
+				Message: choiceMessage{
+					Role:    c.Message.Role,
+					Content: c.Message.Content,
+				},
+				FinishReason: c.FinishReason,
+			}
+		}
+
+		writeJSON(w, http.StatusOK, out)
 	}
-	writeJSON(w, http.StatusOK, resp)
+}
+
+func joinStringParts(parts []string) string {
+	out := ""
+	for i, p := range parts {
+		if i > 0 {
+			out += "\n"
+		}
+		out += p
+	}
+	return out
 }
 
 type modelEntry struct {

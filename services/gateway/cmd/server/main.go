@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"orca/gateway/internal/api"
+	"orca/gateway/internal/provider"
+	"orca/gateway/internal/provider/openai"
 )
 
 func main() {
@@ -19,9 +21,10 @@ func main() {
 	slog.SetDefault(logger)
 
 	keys := apiKeysFromEnv()
+	registry := buildProviderRegistry()
 	srv := &http.Server{
 		Addr:              ":" + envOr("ORCA_PORT", "8080"),
-		Handler:           api.NewRouter(keys),
+		Handler:           api.NewRouter(keys, registry),
 		ReadHeaderTimeout: 10 * time.Second,
 		WriteTimeout:      60 * time.Second,
 		IdleTimeout:       120 * time.Second,
@@ -47,6 +50,25 @@ func main() {
 	}
 	<-shutdownDone
 	slog.Info("gateway stopped")
+}
+
+func buildProviderRegistry() *provider.Registry {
+	registry := provider.NewRegistry()
+
+	if apiKey := os.Getenv("OPENAI_API_KEY"); apiKey != "" {
+		adapter := openai.New(openai.Config{
+			APIKey:  apiKey,
+			BaseURL: os.Getenv("OPENAI_BASE_URL"),
+		})
+		for _, m := range []string{"gpt-4o", "gpt-4o-mini", "gpt-4", "gpt-4-turbo", "gpt-3.5-turbo"} {
+			registry.Register(m, adapter)
+		}
+		slog.Info("registered openai provider", "models", "gpt-4o, gpt-4o-mini, gpt-4, gpt-4-turbo, gpt-3.5-turbo")
+	} else {
+		slog.Warn("OPENAI_API_KEY not set; OpenAI provider disabled")
+	}
+
+	return registry
 }
 
 func apiKeysFromEnv() []string {
