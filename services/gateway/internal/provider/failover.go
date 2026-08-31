@@ -51,10 +51,22 @@ func (f *failoverProvider) Stream(ctx context.Context, req *CompletionRequest, e
 				"model", req.Model)
 			continue
 		}
+
+		emitted := false
+		wrapped := func(chunk StreamChunk) error {
+			if chunk.Delta != "" || chunk.Finish != "" {
+				emitted = true
+			}
+			return emit(chunk)
+		}
+
 		slog.Debug("streaming via provider", "provider", p.Name(), "model", req.Model)
-		err := s.Stream(ctx, req, emit)
+		err := s.Stream(ctx, req, wrapped)
 		if err == nil {
 			return nil
+		}
+		if emitted {
+			return fmt.Errorf("provider %q failed mid-stream after emitting tokens: %w", p.Name(), err)
 		}
 		errs = append(errs, err)
 		slog.Warn("provider stream failed, trying fallback",

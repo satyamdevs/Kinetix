@@ -145,6 +145,32 @@ func TestFailoverStreamSkipsNonStreamer(t *testing.T) {
 	}
 }
 
+func TestFailoverStreamNoFallbackAfterMidStream(t *testing.T) {
+	first := &stubProvider{name: "first", streamFn: func(ctx context.Context, req *CompletionRequest, emit func(StreamChunk) error) error {
+		_ = emit(StreamChunk{Delta: "partial "})
+		return errors.New("mid-stream boom")
+	}}
+	second := &stubProvider{name: "second", streamFn: func(ctx context.Context, req *CompletionRequest, emit func(StreamChunk) error) error {
+		return emit(StreamChunk{Delta: "should not appear"})
+	}}
+
+	f := &failoverProvider{name: "alias", providers: []Provider{first, second}}
+	var got []string
+	err := f.Stream(context.Background(), &CompletionRequest{Model: "alias"}, func(chunk StreamChunk) error {
+		got = append(got, chunk.Delta)
+		return nil
+	})
+	if err == nil {
+		t.Fatal("expected mid-stream error to propagate, not fall back")
+	}
+	if !strings.Contains(err.Error(), "mid-stream") {
+		t.Fatalf("err = %v, want mid-stream mention", err)
+	}
+	if len(got) != 1 || got[0] != "partial " {
+		t.Fatalf("collected %v, want only first provider's partial delta", got)
+	}
+}
+
 func TestFailoverStreamPropagatesEmitError(t *testing.T) {
 	f := &failoverProvider{name: "alias", providers: []Provider{
 		&stubProvider{name: "streamy", streamFn: func(ctx context.Context, req *CompletionRequest, emit func(StreamChunk) error) error {
