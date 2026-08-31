@@ -78,6 +78,21 @@ type ollamaErrorResponse struct {
 	} `json:"error"`
 }
 
+type ollamaStreamChoice struct {
+	Index int `json:"index"`
+	Delta struct {
+		Content string `json:"content"`
+	} `json:"delta"`
+	FinishReason *string `json:"finish_reason"`
+}
+
+type ollamaStreamChunk struct {
+	ID      string               `json:"id"`
+	Object  string               `json:"object"`
+	Model   string               `json:"model"`
+	Choices []ollamaStreamChoice `json:"choices"`
+}
+
 func (a *adapter) Complete(ctx context.Context, req *provider.CompletionRequest) (*provider.CompletionResponse, error) {
 	ollamaReq := ollamaRequest{
 		Model:    req.Model,
@@ -152,4 +167,79 @@ func (a *adapter) Complete(ctx context.Context, req *provider.CompletionRequest)
 
 	slog.Debug("ollama response", "id", resp.ID, "model", resp.Model, "tokens", resp.Usage.TotalTokens)
 	return resp, nil
+}
+
+func (a *adapter) Stream(ctx context.Context, req *provider.CompletionRequest, emit func(provider.StreamChunk) error) error {
+	ollamaReq := ollamaRequest{
+		Model:    req.Model,
+		Stream:   true,
+		Messages: req.Messages,
+	}
+	if req.Temperature > 0 {
+		ollamaReq.Temperature = req.Temperature
+	}
+	if req.MaxTokens > 0 {
+		ollamaReq.MaxTokens = req.MaxTokens
+	}
+
+	body, err := json.Marshal(ollamaReq)
+	if err != nil {
+		return fmt.Errorf("marshal ollama request: %w", err)
+	}
+
+	url := a.cfg.BaseURL + "/chat/completions"
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("create http request: %w", err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	slog.Debug("ollama stream request", "model", req.Model, "url", url)
+
+	httpResp, err := a.client.Do(httpReq)
+	if err != nil {
+		return fmt.Errorf("ollama stream request failed: %w", err)
+	}
+	defer httpResp.Body.Close()
+
+	if httpResp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(httpResp.Body)
+		var oErr ollamaErrorResponse
+		if json.Unmarshal(respBody, &oErr) == nil && oErr.Error.Message != "" {
+			return fmt.Errorf("ollama api error (%s): %s", oErr.Error.Type, oErr.Error.Message)
+		}
+		return fmt.Errorf("ollama api returned status %d: %s", httpResp.StatusCode, string(respBody))
+	}
+
+	var id, model string
+	return provider.ForEachSSE(httpResp.Body, func(data string) error {
+		if data == "[DONE]" {
+			return io.EOF
+		}
+		var chunk ollamaStreamChunk
+		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
+			return fmt.Errorf("unmarshal ollama stream chunk: %w", err)
+		}
+		if id == "" {
+			id = chunk.ID
+		}
+		if model == "" {
+			model = chunk.Model
+		}
+		if len(chunk.Choices) == 0 {
+			return nil
+		}
+		c := chunk.Choices[0]
+		finish := ""
+		if c.FinishReason != nil {
+			finish = *c.FinishReason
+		}
+		return emit(provider.StreamChunk{
+			ID:     id,
+			Model:  model,
+			Index:  c.Index,
+			Delta:  c.Delta.Content,
+			Finish: finish,
+		})
+	})
 }
