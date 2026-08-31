@@ -32,3 +32,12 @@ type CompletionResponse struct {
 	Usage             Usage    `json:"usage"`
 	SystemFingerprint string   `json:"system_fingerprint,omitempty"`
 }
+
+type StreamChunk struct {
+	ID     string
+	Model  string
+	Index  int
+	Delta  string
+	Finish string
+	Usage  *Usage
+}

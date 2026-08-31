@@ -10,6 +10,12 @@ type Provider interface {
 	Complete(ctx context.Context, req *CompletionRequest) (*CompletionResponse, error)
 }
 
+// Streamer is an optional capability implemented by providers that support
+// token streaming. Consumers should type-assert Provider to Streamer.
+type Streamer interface {
+	Stream(ctx context.Context, req *CompletionRequest, emit func(StreamChunk) error) error
+}
+
 type Registry struct {
 	providers map[string][]Provider
 	order     []string
