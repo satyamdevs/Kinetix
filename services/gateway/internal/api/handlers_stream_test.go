@@ -8,8 +8,17 @@ import (
 	"testing"
 
 	"orca/gateway/internal/api"
+	"orca/gateway/internal/keys"
+	"orca/gateway/internal/limits"
 	"orca/gateway/internal/provider"
 )
+
+func testRouter(r *provider.Registry) http.Handler {
+	mem := keys.NewMemory()
+	mem.Upsert(&keys.Key{ID: "test", Name: "test", Owner: "test", Hash: keys.Hash("sk-test"), Enabled: true})
+	gov := &api.Governance{Keys: mem, Limiter: limits.NewMemory()}
+	return api.NewRouter(gov, r)
+}
 
 type fakeStreamer struct{}
 
@@ -35,7 +44,7 @@ func (fakeStreamer) Stream(_ context.Context, _ *provider.CompletionRequest, emi
 func TestStreamChatCompletionsSSE(t *testing.T) {
 	r := provider.NewRegistry()
 	r.Register("fake", fakeStreamer{})
-	router := api.NewRouter([]string{"sk-test"}, r)
+	router := testRouter(r)
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions",
 		strings.NewReader(`{"model":"fake","stream":true,"messages":[{"role":"user","content":"hi"}]}`))
@@ -70,7 +79,7 @@ func TestStreamChatCompletionsSSE(t *testing.T) {
 func TestChatCompletionsNonStream(t *testing.T) {
 	r := provider.NewRegistry()
 	r.Register("fake", fakeStreamer{})
-	router := api.NewRouter([]string{"sk-test"}, r)
+	router := testRouter(r)
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions",
 		strings.NewReader(`{"model":"fake","messages":[{"role":"user","content":"hi"}]}`))
