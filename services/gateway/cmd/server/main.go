@@ -7,11 +7,17 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
 
+	"github.com/redis/go-redis/v9"
+
 	"orca/gateway/internal/api"
+	"orca/gateway/internal/guardrails"
+	"orca/gateway/internal/keys"
+	"orca/gateway/internal/limits"
 	"orca/gateway/internal/provider"
 	"orca/gateway/internal/provider/anthropic"
 	"orca/gateway/internal/provider/ollama"
@@ -22,11 +28,12 @@ func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	slog.SetDefault(logger)
 
-	keys := apiKeysFromEnv()
+	ctx := context.Background()
+	gov := buildGovernance(ctx)
 	registry := buildProviderRegistry()
 	srv := &http.Server{
 		Addr:              ":" + envOr("ORCA_PORT", "8080"),
-		Handler:           api.NewRouter(keys, registry),
+		Handler:           api.NewRouter(gov, registry),
 		ReadHeaderTimeout: 10 * time.Second,
 		WriteTimeout:      60 * time.Second,
 		IdleTimeout:       120 * time.Second,
@@ -37,9 +44,9 @@ func main() {
 		sig := make(chan os.Signal, 1)
 		signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
 		<-sig
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		shutCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		if err := srv.Shutdown(ctx); err != nil {
+		if err := srv.Shutdown(shutCtx); err != nil {
 			slog.Error("graceful shutdown failed", "err", err)
 		}
 		close(shutdownDone)
@@ -52,6 +59,84 @@ func main() {
 	}
 	<-shutdownDone
 	slog.Info("gateway stopped")
+}
+
+func buildGovernance(ctx context.Context) *api.Governance {
+	gov := &api.Governance{
+		Limiter: limits.NewMemory(),
+		Policy: limits.Policy{
+			RequestsPerMinute: envInt("ORCA_DEFAULT_RPM", 1000),
+			TokensPerMonth:    envInt("ORCA_DEFAULT_TPM", 100_000_000),
+			Window:            limits.DefaultWindow,
+		},
+	}
+
+	gov.Keys = buildKeyStore(ctx)
+	gov.Limiter = buildLimiter(ctx)
+	gov.Guardrails = buildGuardrails()
+
+	slog.Info("governance configured",
+		"key_store", storeKind(gov.Keys),
+		"limiter", limiterKind(gov.Limiter),
+		"guardrails", guardrailCount(gov.Guardrails),
+		"default_rpm", gov.Policy.RequestsPerMinute,
+	)
+	return gov
+}
+
+func buildKeyStore(ctx context.Context) keys.Store {
+	if dsn := os.Getenv("POSTGRES_DSN"); dsn != "" {
+		store, err := keys.NewPostgres(ctx, dsn)
+		if err != nil {
+			slog.Error("postgres unavailable, falling back to in-memory keys", "err", err)
+		} else {
+			return store
+		}
+	}
+
+	mem := keys.NewMemory()
+	limit := keys.Limit{
+		RequestsPerMinute: envInt("ORCA_DEFAULT_RPM", 1000),
+		TokensPerMonth:    envInt("ORCA_DEFAULT_TPM", 100_000_000),
+	}
+	for _, raw := range apiKeysFromEnv() {
+		mem.Upsert(&keys.Key{
+			ID:        "dev-" + keys.Hash(raw)[:8],
+			Name:      "dev",
+			Owner:     "local",
+			Hash:      keys.Hash(raw),
+			Prefix:    raw[:8],
+			Limit:     limit,
+			Enabled:   true,
+			CreatedAt: time.Now().UTC(),
+		})
+	}
+	return mem
+}
+
+func buildLimiter(ctx context.Context) limits.Limiter {
+	if addr := os.Getenv("REDIS_ADDR"); addr != "" {
+		rdb := redis.NewClient(&redis.Options{Addr: addr})
+		if err := rdb.Ping(ctx).Err(); err != nil {
+			slog.Error("redis unavailable, falling back to in-memory limiter", "err", err)
+			return limits.NewMemory()
+		}
+		return limits.NewRedis(rdb)
+	}
+	return limits.NewMemory()
+}
+
+func buildGuardrails() *guardrails.Filter {
+	entries := splitCSV(os.Getenv("ORCA_GUARDRAILS"))
+	if len(entries) == 0 {
+		return nil
+	}
+	rules, err := guardrails.ParseRules(entries)
+	if err != nil {
+		slog.Error("invalid ORCA_GUARDRAILS, disabling guardrails", "err", err)
+		return nil
+	}
+	return guardrails.New(rules...)
 }
 
 func buildProviderRegistry() *provider.Registry {
@@ -115,6 +200,35 @@ func registerFallbacks(registry *provider.Registry, alias string, models ...stri
 	slog.Info("registered fallback alias", "alias", alias, "providers", registry.ProviderNames(alias))
 }
 
+func storeKind(s keys.Store) string {
+	switch s.(type) {
+	case *keys.Postgres:
+		return "postgres"
+	case *keys.Memory:
+		return "memory"
+	default:
+		return "none"
+	}
+}
+
+func limiterKind(l limits.Limiter) string {
+	switch l.(type) {
+	case *limits.Redis:
+		return "redis"
+	case *limits.Memory:
+		return "memory"
+	default:
+		return "none"
+	}
+}
+
+func guardrailCount(f *guardrails.Filter) int {
+	if f == nil {
+		return 0
+	}
+	return f.Len()
+}
+
 func apiKeysFromEnv() []string {
 	raw := envOr("ORCA_API_KEYS", "sk-orca-dev-key")
 	var keys []string
@@ -126,9 +240,32 @@ func apiKeysFromEnv() []string {
 	return keys
 }
 
+func splitCSV(raw string) []string {
+	var out []string
+	for _, s := range strings.Split(raw, ";") {
+		if s = strings.TrimSpace(s); s != "" {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
 func envOr(key, fallback string) string {
 	if v := os.Getenv(key); v != "" {
 		return v
 	}
 	return fallback
+}
+
+func envInt(key string, fallback int64) int64 {
+	v := os.Getenv(key)
+	if v == "" {
+		return fallback
+	}
+	n, err := strconv.ParseInt(v, 10, 64)
+	if err != nil {
+		slog.Warn("invalid int", "key", key, "value", v, "err", err)
+		return fallback
+	}
+	return n
 }
