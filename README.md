@@ -52,16 +52,27 @@ Every `/v1` request passes through the governance pipeline:
 
 1. **API keys** — Bearer tokens are hashed (SHA-256) and looked up in the key
    store. Disabled and expired keys are rejected. In dev, keys come from
-   `ORCA_API_KEYS`; with `POSTGRES_DSN` set the `api_keys` table is used. Use
-   the `keys.Generate` helper to mint a key, then store only its
-   `Hash`, `Prefix`, and limits in `api_keys`.
+   `ORCA_API_KEYS`; with `POSTGRES_DSN` set the `api_keys` table is used.
+   Provision keys with the admin CLI (`make build-keys` → `bin/orca-keys`):
+
+   ```bash
+   bin/orca-keys -dsn "$POSTGRES_DSN" create \
+     -name my-app -owner team-a -rpm 1000 -tpm 50000000 -ttl 720h
+   bin/orca-keys -dsn "$POSTGRES_DSN" list          # view keys
+   bin/orca-keys -dsn "$POSTGRES_DSN" disable <id>  # revoke temporarily
+   bin/orca-keys -dsn "$POSTGRES_DSN" revoke  <id>  # delete permanently
+   ```
+
+   The raw key is printed once at `create`; persist it in a secrets manager.
 2. **Rate limiting** — fixed-window request counters per key (per-minute cap),
    stored in Redis (`REDIS_ADDR`). Falls back to an in-memory limiter in dev.
    Responses carry `X-RateLimit-Limit` / `X-RateLimit-Remaining`; excess
    requests get `429 rate_limit_exceeded`.
 3. **Quotas** — cumulative token spend is tracked per key. Requests from keys
    that exhausted their monthly token budget get `429 quota_exceeded`; actual
-   usage is accounted after each completion (streamed and non-streamed).
+   usage is accounted after each completion (streamed and non-streamed). The
+   monthly budget is reset by deleting the per-key spend counter in the limit
+   store (handled by a quota-rollover job; not polled automatically yet).
 4. **Guardrails** — optional content filters (`ORCA_GUARDRAILS`) evaluated
    against inbound prompts and non-streamed model output. Matches are blocked
    with `400 content_policy_violation`.

@@ -70,3 +70,10 @@ func (r *Redis) AddTokens(ctx context.Context, id string, n, cap int64) (Decisio
 	}
 	return Decision{OK: true, Remaining: total}, nil
 }
+
+func (r *Redis) ResetTokens(ctx context.Context, id string) error {
+	if err := r.rdb.Del(ctx, fmt.Sprintf(tokensKey, id)).Err(); err != nil {
+		return fmt.Errorf("%w: %v", ErrStore, err)
+	}
+	return nil
+}

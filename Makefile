@@ -1,7 +1,7 @@
 GATEWAY_DIR := services/gateway
 COMPOSE_FILE := deploy/docker-compose.yml
 
-.PHONY: dev-deps dev-down run-gateway build test clean
+.PHONY: dev-deps dev-down run-gateway build build-keys test clean
 
 dev-deps:
 	docker compose -f $(COMPOSE_FILE) up -d
@@ -14,6 +14,9 @@ run-gateway:
 
 build:
 	cd $(GATEWAY_DIR) && go build -o ../../bin/gateway ./cmd/server
+
+build-keys:
+	cd $(GATEWAY_DIR) && go build -o ../../bin/orca-keys ./cmd/orca-keys
 
 test:
 	cd $(GATEWAY_DIR) && go test ./...

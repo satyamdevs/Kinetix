@@ -34,6 +34,8 @@ type Limiter interface {
 	// AddTokens reserves n tokens for id. When cap > 0 the decision reports
 	// whether the cumulative total now exceeds it; the spend is still recorded.
 	AddTokens(ctx context.Context, id string, n int64, cap int64) (Decision, error)
+	// ResetTokens zeroes the cumulative token spend for id (monthly rollover).
+	ResetTokens(ctx context.Context, id string) error
 }
 
 // DefaultWindow is the fixed rate-limit window.

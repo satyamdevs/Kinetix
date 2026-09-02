@@ -71,6 +71,17 @@ func TestMemoryTokenQuota(t *testing.T) {
 	if total != 600 {
 		t.Fatalf("total = %d, want 600", total)
 	}
+
+	if err := l.ResetTokens(context.Background(), "k"); err != nil {
+		t.Fatal(err)
+	}
+	after, err := l.Tokens(context.Background(), "k")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after != 0 {
+		t.Fatalf("after reset total = %d, want 0", after)
+	}
 }
 
 func TestRedisBackend(t *testing.T) {

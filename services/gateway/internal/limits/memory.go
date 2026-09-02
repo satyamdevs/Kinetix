@@ -55,3 +55,10 @@ func (m *Memory) AddTokens(_ context.Context, id string, n, cap int64) (Decision
 	}
 	return Decision{OK: true, Remaining: total}, nil
 }
+
+func (m *Memory) ResetTokens(_ context.Context, id string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.tokens, id)
+	return nil
+}
