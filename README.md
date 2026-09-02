@@ -95,11 +95,29 @@ Registered from env; providers absent (e.g. `OPENAI_API_KEY` unset) are skipped:
 Streaming: set `"stream": true` in the body to receive OpenAI-compatible
 `chat.completion.chunk` events terminated by `data: [DONE]`.
 
+### Telemetry (Phase 4)
+
+Every completion (streamed and non-streamed) records a row to ClickHouse:
+timing, key, model, provider, token usage, and USD cost (priced per model).
+With `CLICKHOUSE_DSN` unset the gateway uses a bounded in-memory buffer, so telemetry
+never blocks or fails a request. Example:
+
+```sql
+SELECT model,
+       toStartOfDay(ts)          AS day,
+       sum(total_tokens)         AS tokens,
+       sum(cost_usd)             AS cost,
+       avg(latency_ms)           AS avg_ms,
+       quantile(0.95)(latency_ms) AS p95_ms
+  FROM orca_telemetry.chat_completions
+ GROUP BY model, day ORDER BY day DESC;
+```
+
 ## Roadmap
 
 - [x] **Phase 1** — Scaffold: gateway server, health checks, mock routes, infra compose
 - [x] **Phase 2** — Provider adapters (OpenAI/Anthropic/Ollama), SSE streaming, failover routing
 - [x] **Phase 3** — Governance: API keys, Redis-backed rate limiting, quotas, guardrails
-- [ ] **Phase 4** — Telemetry: ClickHouse ingest, token/cost accounting
+- [x] **Phase 4** — Telemetry: ClickHouse ingest, token/cost accounting
 - [ ] **Phase 5** — Dashboard: usage charts, latency views, policy editor
 - [ ] **Phase 6** — Hardening: <10ms overhead benchmarks, integration tests, CI

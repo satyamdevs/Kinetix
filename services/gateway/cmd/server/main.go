@@ -22,6 +22,7 @@ import (
 	"orca/gateway/internal/provider/anthropic"
 	"orca/gateway/internal/provider/ollama"
 	"orca/gateway/internal/provider/openai"
+	"orca/gateway/internal/telemetry"
 )
 
 func main() {
@@ -58,6 +59,11 @@ func main() {
 		os.Exit(1)
 	}
 	<-shutdownDone
+	if gov.Telemetry != nil {
+		if err := gov.Telemetry.Close(); err != nil {
+			slog.Warn("closing telemetry sink", "err", err)
+		}
+	}
 	slog.Info("gateway stopped")
 }
 
@@ -74,14 +80,40 @@ func buildGovernance(ctx context.Context) *api.Governance {
 	gov.Keys = buildKeyStore(ctx)
 	gov.Limiter = buildLimiter(ctx)
 	gov.Guardrails = buildGuardrails()
+	gov.Telemetry = buildTelemetry(ctx)
+	gov.Pricer = telemetry.DefaultPricer()
 
 	slog.Info("governance configured",
 		"key_store", storeKind(gov.Keys),
 		"limiter", limiterKind(gov.Limiter),
 		"guardrails", guardrailCount(gov.Guardrails),
+		"telemetry", telemetryKind(gov.Telemetry),
 		"default_rpm", gov.Policy.RequestsPerMinute,
 	)
 	return gov
+}
+
+func buildTelemetry(ctx context.Context) telemetry.Sink {
+	if dsn := os.Getenv("CLICKHOUSE_DSN"); dsn != "" {
+		sink, err := telemetry.Open(ctx, dsn)
+		if err != nil {
+			slog.Warn("clickhouse unavailable, telemetry buffered in memory", "err", err)
+			return telemetry.NewBuffer(1024)
+		}
+		return sink
+	}
+	return telemetry.NewBuffer(1024)
+}
+
+func telemetryKind(s telemetry.Sink) string {
+	switch s.(type) {
+	case *telemetry.ClickHouse:
+		return "clickhouse"
+	case *telemetry.Buffer:
+		return "memory"
+	default:
+		return "none"
+	}
 }
 
 func buildKeyStore(ctx context.Context) keys.Store {
