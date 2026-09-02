@@ -72,6 +72,64 @@ func (c *ClickHouse) Close() error {
 	return c.db.Close()
 }
 
+const usageSummarySQL = `
+SELECT toDate(ts)                              AS day,
+       model,
+       count()                                 AS requests,
+       sum(prompt_tokens)                      AS prompt_tokens,
+       sum(completion_tokens)                  AS completion_tokens,
+       sum(total_tokens)                       AS total_tokens,
+       sum(cost_usd)                           AS cost_usd,
+       avg(latency_ms)                         AS avg_ms,
+       quantile(0.95)(latency_ms)              AS p95_ms
+  FROM chat_completions
+ WHERE ts >= ? AND ts < ?
+   AND (? = '' OR model = ?)
+ GROUP BY day, model
+ ORDER BY day ASC, model ASC`
+
+// UsageSummary runs a ClickHouse aggregation over the observed completions.
+func (c *ClickHouse) UsageSummary(ctx context.Context, r Range) (*UsageSummary, error) {
+	rows, err := c.db.QueryContext(ctx, usageSummarySQL,
+		r.From.Format("2006-01-02 15:04:05"),
+		r.To.Format("2006-01-02 15:04:05"),
+		r.Model, r.Model,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("usage summary query: %w", err)
+	}
+	defer rows.Close()
+
+	var pts []DailyPoint
+	for rows.Next() {
+		var (
+			day, model                string
+			requests                  int64
+			prompt, completion, total int64
+			cost, avgMS, p95MS        float64
+		)
+		if err := rows.Scan(&day, &model, &requests,
+			&prompt, &completion, &total, &cost, &avgMS, &p95MS); err != nil {
+			return nil, fmt.Errorf("scan usage summary: %w", err)
+		}
+		pts = append(pts, DailyPoint{
+			Day:              day,
+			Model:            model,
+			Requests:         int(requests),
+			PromptTokens:     int(prompt),
+			CompletionTokens: int(completion),
+			TotalTokens:      int(total),
+			CostUSD:          cost,
+			AvgLatencyMS:     avgMS,
+			P95LatencyMS:     p95MS,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate usage summary: %w", err)
+	}
+	return &UsageSummary{Points: pts}, nil
+}
+
 func or(s, fallback string) string {
 	if s == "" {
 		return fallback

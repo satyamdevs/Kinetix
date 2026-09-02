@@ -77,10 +77,10 @@ func buildGovernance(ctx context.Context) *api.Governance {
 		},
 	}
 
-	gov.Keys = buildKeyStore(ctx)
+	gov.Keys, gov.Keeper = buildKeyStore(ctx)
 	gov.Limiter = buildLimiter(ctx)
 	gov.Guardrails = buildGuardrails()
-	gov.Telemetry = buildTelemetry(ctx)
+	gov.Telemetry, gov.Querier = buildTelemetry(ctx)
 	gov.Pricer = telemetry.DefaultPricer()
 
 	slog.Info("governance configured",
@@ -93,16 +93,18 @@ func buildGovernance(ctx context.Context) *api.Governance {
 	return gov
 }
 
-func buildTelemetry(ctx context.Context) telemetry.Sink {
+func buildTelemetry(ctx context.Context) (telemetry.Sink, telemetry.Querier) {
 	if dsn := os.Getenv("CLICKHOUSE_DSN"); dsn != "" {
 		sink, err := telemetry.Open(ctx, dsn)
 		if err != nil {
 			slog.Warn("clickhouse unavailable, telemetry buffered in memory", "err", err)
-			return telemetry.NewBuffer(1024)
+			buf := telemetry.NewBuffer(1024)
+			return buf, &telemetry.InMemoryQuerier{Buffer: buf}
 		}
-		return sink
+		return sink, sink
 	}
-	return telemetry.NewBuffer(1024)
+	buf := telemetry.NewBuffer(1024)
+	return buf, &telemetry.InMemoryQuerier{Buffer: buf}
 }
 
 func telemetryKind(s telemetry.Sink) string {
@@ -116,13 +118,13 @@ func telemetryKind(s telemetry.Sink) string {
 	}
 }
 
-func buildKeyStore(ctx context.Context) keys.Store {
+func buildKeyStore(ctx context.Context) (keys.Store, keys.Keeper) {
 	if dsn := os.Getenv("POSTGRES_DSN"); dsn != "" {
 		store, err := keys.NewPostgres(ctx, dsn)
 		if err != nil {
 			slog.Error("postgres unavailable, falling back to in-memory keys", "err", err)
 		} else {
-			return store
+			return store, store
 		}
 	}
 
@@ -143,7 +145,20 @@ func buildKeyStore(ctx context.Context) keys.Store {
 			CreatedAt: time.Now().UTC(),
 		})
 	}
-	return mem
+	if raw := os.Getenv("ORCA_ADMIN_KEY"); raw != "" {
+		mem.Upsert(&keys.Key{
+			ID:        "admin-" + keys.Hash(raw)[:8],
+			Name:      "admin",
+			Owner:     "local",
+			Hash:      keys.Hash(raw),
+			Prefix:    raw[:8],
+			Scopes:    []string{"admin"},
+			Limit:     limit,
+			Enabled:   true,
+			CreatedAt: time.Now().UTC(),
+		})
+	}
+	return mem, mem
 }
 
 func buildLimiter(ctx context.Context) limits.Limiter {
