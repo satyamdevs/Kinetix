@@ -79,3 +79,50 @@ func TestValidate(t *testing.T) {
 		t.Fatalf("expired key: want ErrExpired, got %v", err)
 	}
 }
+
+func TestMemoryKeeperLifecycle(t *testing.T) {
+	m := NewMemory()
+	ctx := context.Background()
+
+	raw1, k1, _ := Generate("ci", "t", Limit{RequestsPerMinute: 5}, 0)
+	raw2, k2, _ := Generate("ci", "t", Limit{TokensPerMonth: 100}, time.Hour)
+
+	if err := m.Create(ctx, k1); err != nil {
+		t.Fatalf("create k1: %v", err)
+	}
+	if err := m.Create(ctx, k2); err != nil {
+		t.Fatalf("create k2: %v", err)
+	}
+	if err := m.Create(ctx, k1); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("duplicate create: want ErrNotFound, got %v", err)
+	}
+
+	all, err := m.List(ctx)
+	if err != nil || len(all) != 2 {
+		t.Fatalf("list = %d, err = %v", len(all), err)
+	}
+
+	if err := m.SetEnabled(ctx, k1.ID, false); err != nil {
+		t.Fatal(err)
+	}
+	got, err := m.Lookup(ctx, Hash(raw1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Enabled {
+		t.Fatal("disabled key should report disabled")
+	}
+	if _, err := m.Lookup(ctx, Hash(raw2)); err != nil {
+		t.Fatalf("enabled key lookup: %v", err)
+	}
+
+	if err := m.Delete(ctx, k2.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.Lookup(ctx, Hash(raw2)); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("revoked key: want ErrNotFound, got %v", err)
+	}
+	if err := m.SetEnabled(ctx, "missing", true); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("unknown id: want ErrNotFound, got %v", err)
+	}
+}

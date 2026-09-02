@@ -47,6 +47,16 @@ type Store interface {
 	Close() error
 }
 
+// Keeper manages key records: provisioning and lifecycle operations used by
+// admin tooling. Runtime gateways only need the read side (Store).
+type Keeper interface {
+	Store
+	Create(ctx context.Context, k *Key) error
+	SetEnabled(ctx context.Context, id string, enabled bool) error
+	Delete(ctx context.Context, id string) error
+	List(ctx context.Context) ([]*Key, error)
+}
+
 // Hash returns the stable identifier persisted for a raw API key.
 func Hash(raw string) string {
 	sum := sha256.Sum256([]byte(raw))
