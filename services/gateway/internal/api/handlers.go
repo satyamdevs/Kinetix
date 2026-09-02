@@ -3,7 +3,9 @@ package api
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"orca/gateway/internal/provider"
@@ -80,7 +82,7 @@ type chatCompletion struct {
 	Usage             usage    `json:"usage"`
 }
 
-func handleChatCompletions(registry *provider.Registry) http.HandlerFunc {
+func handleChatCompletions(registry *provider.Registry, gov *Governance) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req chatRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -112,7 +114,7 @@ func handleChatCompletions(registry *provider.Registry) http.HandlerFunc {
 			internalReq.MaxTokens = req.MaxTokens
 		}
 		if req.Stream {
-			streamChatCompletion(w, r, p, internalReq)
+			streamChatCompletion(w, r, p, internalReq, gov)
 			return
 		}
 
@@ -122,6 +124,16 @@ func handleChatCompletions(registry *provider.Registry) http.HandlerFunc {
 				"Upstream provider error: "+err.Error(),
 				"api_error", "upstream_error")
 			return
+		}
+
+		if d, checked := checkOutput(guardrailsOf(gov), responseText(resp)); checked && !d.OK {
+			writeError(w, http.StatusBadRequest,
+				"Response blocked by guardrail: "+d.Reason,
+				"content_policy_violation", "content_policy")
+			return
+		}
+		if err := spendQuota(r, limitOf(gov), int64(resp.Usage.TotalTokens)); err != nil {
+			slog.Warn("quota accounting failed", "err", err)
 		}
 
 		out := chatCompletion{
@@ -184,6 +196,15 @@ func joinStringParts(parts []string) string {
 	return out
 }
 
+func responseText(resp *provider.CompletionResponse) string {
+	var b strings.Builder
+	for _, c := range resp.Choices {
+		b.WriteString(c.Message.Content)
+		b.WriteString("\n")
+	}
+	return strings.TrimSpace(b.String())
+}
+
 type streamDelta struct {
 	Role    string `json:"role,omitempty"`
 	Content string `json:"content,omitempty"`
@@ -215,7 +236,7 @@ func writeSSE(w http.ResponseWriter, f http.Flusher, payload any) error {
 	return nil
 }
 
-func streamChatCompletion(w http.ResponseWriter, r *http.Request, p provider.Provider, req *provider.CompletionRequest) {
+func streamChatCompletion(w http.ResponseWriter, r *http.Request, p provider.Provider, req *provider.CompletionRequest, gov *Governance) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		writeError(w, http.StatusInternalServerError,
@@ -252,6 +273,7 @@ func streamChatCompletion(w http.ResponseWriter, r *http.Request, p provider.Pro
 	}
 
 	var id, model string
+	var usedTokens int64
 	err := s.Stream(r.Context(), req, func(chunk provider.StreamChunk) error {
 		if id == "" {
 			id = chunk.ID
@@ -276,6 +298,7 @@ func streamChatCompletion(w http.ResponseWriter, r *http.Request, p provider.Pro
 			return err
 		}
 		if chunk.Usage != nil {
+			usedTokens = int64(chunk.Usage.TotalTokens)
 			return writeSSE(w, flusher, map[string]any{
 				"id":      id,
 				"object":  "chat.completion.chunk",
@@ -294,6 +317,9 @@ func streamChatCompletion(w http.ResponseWriter, r *http.Request, p provider.Pro
 				"type":    "api_error",
 			},
 		})
+	}
+	if err := spendQuota(r, limitOf(gov), usedTokens); err != nil {
+		slog.Warn("quota accounting failed", "err", err)
 	}
 	_, _ = fmt.Fprintf(w, "data: [DONE]\n\n")
 	flusher.Flush()
