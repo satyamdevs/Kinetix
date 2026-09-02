@@ -28,7 +28,7 @@ func (fakeStreamer) Complete(context.Context, *provider.CompletionRequest) (*pro
 	return &provider.CompletionResponse{ID: "fake-id", Model: "fake", Choices: []provider.Choice{{
 		Message:      provider.Message{Role: "assistant", Content: "hi"},
 		FinishReason: "stop",
-	}}}, nil
+	}}, Usage: provider.Usage{PromptTokens: 8, CompletionTokens: 1, TotalTokens: 9}}, nil
 }
 
 func (fakeStreamer) Stream(_ context.Context, _ *provider.CompletionRequest, emit func(provider.StreamChunk) error) error {

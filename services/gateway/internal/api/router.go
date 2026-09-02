@@ -10,16 +10,19 @@ import (
 	"orca/gateway/internal/keys"
 	"orca/gateway/internal/limits"
 	"orca/gateway/internal/provider"
+	"orca/gateway/internal/telemetry"
 )
 
-// Governance bundles the Phase 3 control-plane pieces applied to every
-// /v1 request. Nil Limiter and Guardrails disable those checks; a nil Keys
-// store rejects all authenticated traffic.
+// Governance bundles the control-plane pieces applied to every /v1 request.
+// Nil Limiter and Guardrails disable those checks; a nil Keys store rejects
+// all authenticated traffic. Telemetry is best-effort and never fails a request.
 type Governance struct {
 	Keys       keys.Store
 	Limiter    limits.Limiter
 	Guardrails *guardrails.Filter
 	Policy     limits.Policy
+	Telemetry  telemetry.Sink
+	Pricer     *telemetry.Pricer
 }
 
 func NewRouter(gov *Governance, registry *provider.Registry) http.Handler {

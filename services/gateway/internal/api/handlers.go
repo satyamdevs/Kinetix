@@ -114,12 +114,15 @@ func handleChatCompletions(registry *provider.Registry, gov *Governance) http.Ha
 			internalReq.MaxTokens = req.MaxTokens
 		}
 		if req.Stream {
-			streamChatCompletion(w, r, p, internalReq, gov)
+			streamChatCompletion(w, r, p, internalReq, gov, providerNames(registry, model))
 			return
 		}
 
+		start := time.Now()
 		resp, err := p.Complete(r.Context(), internalReq)
 		if err != nil {
+			recordCompletion(r.Context(), gov, http.StatusBadGateway, false,
+				model, providerNames(registry, model), provider.Usage{}, time.Since(start))
 			writeError(w, http.StatusBadGateway,
 				"Upstream provider error: "+err.Error(),
 				"api_error", "upstream_error")
@@ -135,6 +138,8 @@ func handleChatCompletions(registry *provider.Registry, gov *Governance) http.Ha
 		if err := spendQuota(r, limitOf(gov), int64(resp.Usage.TotalTokens)); err != nil {
 			slog.Warn("quota accounting failed", "err", err)
 		}
+		recordCompletion(r.Context(), gov, http.StatusOK, false,
+			model, providerNames(registry, model), resp.Usage, time.Since(start))
 
 		out := chatCompletion{
 			ID:                resp.ID,
@@ -205,6 +210,16 @@ func responseText(resp *provider.CompletionResponse) string {
 	return strings.TrimSpace(b.String())
 }
 
+// providerNames returns the first configured provider serving a model, or
+// empty if none is known.
+func providerNames(registry *provider.Registry, model string) string {
+	names := registry.ProviderNames(model)
+	if len(names) == 0 {
+		return ""
+	}
+	return names[0]
+}
+
 type streamDelta struct {
 	Role    string `json:"role,omitempty"`
 	Content string `json:"content,omitempty"`
@@ -236,7 +251,7 @@ func writeSSE(w http.ResponseWriter, f http.Flusher, payload any) error {
 	return nil
 }
 
-func streamChatCompletion(w http.ResponseWriter, r *http.Request, p provider.Provider, req *provider.CompletionRequest, gov *Governance) {
+func streamChatCompletion(w http.ResponseWriter, r *http.Request, p provider.Provider, req *provider.CompletionRequest, gov *Governance, providerName string) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		writeError(w, http.StatusInternalServerError,
@@ -259,6 +274,7 @@ func streamChatCompletion(w http.ResponseWriter, r *http.Request, p provider.Pro
 	w.Header().Set("X-Accel-Buffering", "no")
 
 	created := time.Now().Unix()
+	start := time.Now()
 
 	roleChunk := streamChunk{
 		Object:  "chat.completion.chunk",
@@ -273,13 +289,16 @@ func streamChatCompletion(w http.ResponseWriter, r *http.Request, p provider.Pro
 	}
 
 	var id, model string
-	var usedTokens int64
+	var streamUsage provider.Usage
 	err := s.Stream(r.Context(), req, func(chunk provider.StreamChunk) error {
 		if id == "" {
 			id = chunk.ID
 		}
 		if model == "" {
 			model = chunk.Model
+		}
+		if chunk.Usage != nil {
+			streamUsage = *chunk.Usage
 		}
 		payload := streamChunk{
 			ID:      id,
@@ -298,7 +317,6 @@ func streamChatCompletion(w http.ResponseWriter, r *http.Request, p provider.Pro
 			return err
 		}
 		if chunk.Usage != nil {
-			usedTokens = int64(chunk.Usage.TotalTokens)
 			return writeSSE(w, flusher, map[string]any{
 				"id":      id,
 				"object":  "chat.completion.chunk",
@@ -310,7 +328,9 @@ func streamChatCompletion(w http.ResponseWriter, r *http.Request, p provider.Pro
 		}
 		return nil
 	})
+	status := http.StatusOK
 	if err != nil {
+		status = http.StatusBadGateway
 		_ = writeSSE(w, flusher, map[string]any{
 			"error": map[string]any{
 				"message": "Upstream provider error: " + err.Error(),
@@ -318,9 +338,10 @@ func streamChatCompletion(w http.ResponseWriter, r *http.Request, p provider.Pro
 			},
 		})
 	}
-	if err := spendQuota(r, limitOf(gov), usedTokens); err != nil {
+	if err := spendQuota(r, limitOf(gov), int64(streamUsage.TotalTokens)); err != nil {
 		slog.Warn("quota accounting failed", "err", err)
 	}
+	recordCompletion(r.Context(), gov, status, true, model, providerName, streamUsage, time.Since(start))
 	_, _ = fmt.Fprintf(w, "data: [DONE]\n\n")
 	flusher.Flush()
 }
