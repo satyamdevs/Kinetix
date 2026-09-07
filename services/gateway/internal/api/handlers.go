@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"orca/gateway/internal/observability"
 	"orca/gateway/internal/provider"
 )
 
@@ -32,6 +33,13 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(v)
+}
+
+// reject writes an error response and records the governance/validation
+// rejection reason on the observability metrics when configured.
+func reject(gov *Governance, w http.ResponseWriter, status int, message, errType, code, reason string) {
+	metricsOf(gov).Rejected(reason)
+	writeError(w, status, message, errType, code)
 }
 
 func handleHealthz(w http.ResponseWriter, _ *http.Request) {
@@ -86,23 +94,24 @@ func handleChatCompletions(registry *provider.Registry, gov *Governance) http.Ha
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req chatRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			writeError(w, http.StatusBadRequest, "Invalid JSON body: "+err.Error(), "invalid_request_error", "invalid_body")
+			reject(gov, w, http.StatusBadRequest, "Invalid JSON body: "+err.Error(),
+				"invalid_request_error", "invalid_body", observability.RejectedInvalidBody)
 			return
 		}
 
 		model := req.Model
 		if model == "" {
-			writeError(w, http.StatusBadRequest,
+			reject(gov, w, http.StatusBadRequest,
 				"The \"model\" field is required.",
-				"invalid_request_error", "missing_model")
+				"invalid_request_error", "missing_model", observability.RejectedMissingModel)
 			return
 		}
 
 		p, err := registry.Lookup(model)
 		if err != nil {
-			writeError(w, http.StatusBadRequest,
+			reject(gov, w, http.StatusBadRequest,
 				err.Error(),
-				"invalid_request_error", "unknown_model")
+				"invalid_request_error", "unknown_model", observability.RejectedUnknownModel)
 			return
 		}
 
@@ -123,16 +132,16 @@ func handleChatCompletions(registry *provider.Registry, gov *Governance) http.Ha
 		if err != nil {
 			recordCompletion(r.Context(), gov, http.StatusBadGateway, false,
 				model, providerNames(registry, model), provider.Usage{}, time.Since(start))
-			writeError(w, http.StatusBadGateway,
+			reject(gov, w, http.StatusBadGateway,
 				"Upstream provider error: "+err.Error(),
-				"api_error", "upstream_error")
+				"api_error", "upstream_error", observability.RejectedUpstream)
 			return
 		}
 
 		if d, checked := checkOutput(guardrailsOf(gov), responseText(resp)); checked && !d.OK {
-			writeError(w, http.StatusBadRequest,
+			reject(gov, w, http.StatusBadRequest,
 				"Response blocked by guardrail: "+d.Reason,
-				"content_policy_violation", "content_policy")
+				"content_policy_violation", "content_policy", observability.RejectedGuardrail)
 			return
 		}
 		if err := spendQuota(r, limitOf(gov), int64(resp.Usage.TotalTokens)); err != nil {
@@ -331,6 +340,7 @@ func streamChatCompletion(w http.ResponseWriter, r *http.Request, p provider.Pro
 	status := http.StatusOK
 	if err != nil {
 		status = http.StatusBadGateway
+		metricsOf(gov).Rejected(observability.RejectedUpstream)
 		_ = writeSSE(w, flusher, map[string]any{
 			"error": map[string]any{
 				"message": "Upstream provider error: " + err.Error(),

@@ -2,10 +2,12 @@ package api
 
 import (
 	"context"
+	"net/http"
 	"time"
 
 	"github.com/go-chi/chi/v5/middleware"
 
+	"orca/gateway/internal/observability"
 	"orca/gateway/internal/provider"
 	"orca/gateway/internal/telemetry"
 )
@@ -26,14 +28,9 @@ func pricerOf(gov *Governance) *telemetry.Pricer {
 
 // recordCompletion writes a telemetry record after a request completes. It is
 // best-effort: writes happen on a separate goroutine and failures are logged,
-// never propagated to the caller.
+// never propagated to the caller. It also feeds the observability metrics.
 func recordCompletion(ctx context.Context, gov *Governance, status int, streamed bool,
 	model, provider string, usage provider.Usage, latency time.Duration) {
-
-	sink := telemetryOf(gov)
-	if sink == nil {
-		return
-	}
 
 	rec := telemetry.Record{
 		RequestID: requestID(ctx),
@@ -42,6 +39,7 @@ func recordCompletion(ctx context.Context, gov *Governance, status int, streamed
 		Provider:  provider,
 		Streamed:  streamed,
 		Status:    status,
+		TraceID:   observability.TraceID(ctx),
 		Usage: telemetry.Usage{
 			PromptTokens:     usage.PromptTokens,
 			CompletionTokens: usage.CompletionTokens,
@@ -50,6 +48,16 @@ func recordCompletion(ctx context.Context, gov *Governance, status int, streamed
 		CostUSD:    pricerOf(gov).Cost(model, usage.PromptTokens, usage.CompletionTokens),
 		Latency:    latency,
 		FinishedAt: time.Now().UTC(),
+	}
+
+	if m := metricsOf(gov); m != nil {
+		m.ObserveCompletion(rec)
+		m.ObserveUpstream(provider, model, status == http.StatusOK)
+	}
+
+	sink := telemetryOf(gov)
+	if sink == nil {
+		return
 	}
 
 	ctx = context.WithoutCancel(ctx)

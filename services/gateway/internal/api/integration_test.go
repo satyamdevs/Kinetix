@@ -58,7 +58,9 @@ func TestIntegrationFailoverHTTPRoutesToHealthyBackend(t *testing.T) {
 	}
 	var out struct {
 		Choices []struct {
-			Message struct{ Content string `json:"content"` } `json:"message"`
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
 		} `json:"choices"`
 	}
 	if err := json.Unmarshal(res.Body.Bytes(), &out); err != nil {

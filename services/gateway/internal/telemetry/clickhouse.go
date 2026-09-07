@@ -13,9 +13,9 @@ import (
 const insertSQL = `
 INSERT INTO chat_completions
     (ts, day, request_id, api_key_id, model, provider, streamed, status,
-     prompt_tokens, completion_tokens, total_tokens, cost_usd, latency_ms, error)
+     prompt_tokens, completion_tokens, total_tokens, cost_usd, latency_ms, error, trace_id)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?,
-        ?, ?, ?, ?, ?, ?)`
+        ?, ?, ?, ?, ?, ?, ?)`
 
 // ClickHouse is a Sink that batches completions into ClickHouse.
 type ClickHouse struct {
@@ -57,6 +57,7 @@ func (c *ClickHouse) Record(ctx context.Context, r Record) error {
 		r.CostUSD,
 		millis(r.Latency),
 		or(r.Error, ""),
+		or(r.TraceID, ""),
 	)
 	if err != nil {
 		slog.Error("telemetry write failed", "err", err)

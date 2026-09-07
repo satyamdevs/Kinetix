@@ -8,12 +8,13 @@ import (
 	"strings"
 
 	"orca/gateway/internal/guardrails"
+	"orca/gateway/internal/observability"
 )
 
 // GuardrailInput inspects the inbound chat request for policy violations
 // before it reaches a provider. It round-trips the body so downstream
 // handlers still decode it normally.
-func GuardrailInput(f *guardrails.Filter) func(http.Handler) http.Handler {
+func GuardrailInput(f *guardrails.Filter, m *observability.Metrics) func(http.Handler) http.Handler {
 	if f == nil || f.Len() == 0 {
 		return passthrough()
 	}
@@ -40,6 +41,7 @@ func GuardrailInput(f *guardrails.Filter) func(http.Handler) http.Handler {
 					b.WriteString("\n")
 				}
 				if d := f.Check(b.String(), guardrails.RoleInput); !d.OK {
+					m.Rejected(observability.RejectedGuardrail)
 					writeError(w, http.StatusBadRequest,
 						"Request blocked by guardrail: "+d.Reason,
 						"content_policy_violation", "content_policy")

@@ -17,7 +17,8 @@ CREATE TABLE IF NOT EXISTS orca_telemetry.chat_completions
     total_tokens   UInt32,
     cost_usd       Float64,
     latency_ms     UInt32,
-    error          String
+    error          String,
+    trace_id       String        -- OpenTelemetry trace id for correlation
 )
 ENGINE = MergeTree
 PARTITION BY toYYYYMM(day)

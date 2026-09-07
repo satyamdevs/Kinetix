@@ -6,12 +6,13 @@ import (
 	"net/http"
 
 	"orca/gateway/internal/limits"
+	"orca/gateway/internal/observability"
 )
 
 // RateLimit enforces the per-key requests-per-minute cap using the shared
 // limiter. Keys with no configured cap and values under the configured policy
 // fall back to the gateway-wide policy.
-func RateLimit(l limits.Limiter, policy limits.Policy) func(http.Handler) http.Handler {
+func RateLimit(l limits.Limiter, policy limits.Policy, m *observability.Metrics) func(http.Handler) http.Handler {
 	if l == nil {
 		return passthrough()
 	}
@@ -43,6 +44,7 @@ func RateLimit(l limits.Limiter, policy limits.Policy) func(http.Handler) http.H
 			w.Header().Set("X-RateLimit-Limit", fmt.Sprint(rpm))
 			w.Header().Set("X-RateLimit-Remaining", fmt.Sprint(max(dec.Remaining, 0)))
 			if !dec.OK {
+				m.Rejected(observability.RejectedRateLimit)
 				writeError(w, http.StatusTooManyRequests,
 					"You have exceeded the allowed request rate. Retry later.",
 					"rate_limit_error", "rate_limit_exceeded")
@@ -56,7 +58,7 @@ func RateLimit(l limits.Limiter, policy limits.Policy) func(http.Handler) http.H
 // Quota blocks requests for keys that have already exhausted their monthly
 // token budget. Actual token spend is recorded after each completion by the
 // handlers.
-func Quota(l limits.Limiter) func(http.Handler) http.Handler {
+func Quota(l limits.Limiter, m *observability.Metrics) func(http.Handler) http.Handler {
 	if l == nil {
 		return passthrough()
 	}
@@ -75,6 +77,7 @@ func Quota(l limits.Limiter) func(http.Handler) http.Handler {
 				return
 			}
 			if spent >= k.Limit.TokensPerMonth {
+				m.Rejected(observability.RejectedQuota)
 				writeError(w, http.StatusTooManyRequests,
 					"You have exceeded your monthly token quota.",
 					"quota_error", "quota_exceeded")

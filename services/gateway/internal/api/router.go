@@ -9,6 +9,7 @@ import (
 	"orca/gateway/internal/guardrails"
 	"orca/gateway/internal/keys"
 	"orca/gateway/internal/limits"
+	"orca/gateway/internal/observability"
 	"orca/gateway/internal/provider"
 	"orca/gateway/internal/telemetry"
 )
@@ -25,12 +26,17 @@ type Governance struct {
 	Telemetry  telemetry.Sink
 	Pricer     *telemetry.Pricer
 	Querier    telemetry.Querier
+	Metrics    *observability.Metrics
+	Tracer     *observability.Tracer
 }
 
 func NewRouter(gov *Governance, registry *provider.Registry) http.Handler {
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID)
 	r.Use(middleware.RealIP)
+	r.Use(observability.TracingMiddleware(tracerOf(gov), "orca-gateway"))
+	r.Use(observability.MetricsMiddleware(metricsOf(gov)))
+	r.Use(observability.RequestLoggingMiddleware(nil))
 	r.Use(middleware.Recoverer)
 
 	r.Get("/healthz", handleHealthz)
@@ -38,9 +44,9 @@ func NewRouter(gov *Governance, registry *provider.Registry) http.Handler {
 
 	v1 := chi.NewRouter()
 	v1.Use(authMiddleware(gov))
-	v1.Use(RateLimit(limitOf(gov), policyOf(gov)))
-	v1.Use(Quota(limitOf(gov)))
-	v1.Use(GuardrailInput(guardrailsOf(gov)))
+	v1.Use(RateLimit(limitOf(gov), policyOf(gov), metricsOf(gov)))
+	v1.Use(Quota(limitOf(gov), metricsOf(gov)))
+	v1.Use(GuardrailInput(guardrailsOf(gov), metricsOf(gov)))
 	v1.Post("/chat/completions", handleChatCompletions(registry, gov))
 	v1.Get("/models", handleListModels(registry))
 	r.Mount("/v1", v1)
@@ -69,6 +75,20 @@ func keeperOf(gov *Governance) keys.Keeper {
 	return gov.Keeper
 }
 
+func metricsOf(gov *Governance) *observability.Metrics {
+	if gov == nil {
+		return nil
+	}
+	return gov.Metrics
+}
+
+func tracerOf(gov *Governance) *observability.Tracer {
+	if gov == nil {
+		return nil
+	}
+	return gov.Tracer
+}
+
 // mountKeyRoutes wires the key/policy management endpoints. If no Keeper is
 // configured the routes still register but return 404, keeping the surface
 // stable whether governance uses memory or Postgres.
@@ -85,7 +105,7 @@ func authMiddleware(gov *Governance) func(http.Handler) http.Handler {
 	if gov == nil || gov.Keys == nil {
 		return rejectAll
 	}
-	return Authenticate(gov.Keys)
+	return Authenticate(gov.Keys, metricsOf(gov))
 }
 
 func limitOf(gov *Governance) limits.Limiter {

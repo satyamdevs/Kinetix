@@ -61,6 +61,7 @@ type Record struct {
 	Provider   string
 	Streamed   bool
 	Status     int
+	TraceID    string
 	Usage      Usage
 	CostUSD    float64
 	Latency    time.Duration
