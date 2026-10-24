@@ -18,6 +18,7 @@ import (
 	"orca/gateway/internal/guardrails"
 	"orca/gateway/internal/keys"
 	"orca/gateway/internal/limits"
+	"orca/gateway/internal/observability"
 	"orca/gateway/internal/provider"
 	"orca/gateway/internal/provider/anthropic"
 	"orca/gateway/internal/provider/ollama"
@@ -30,14 +31,17 @@ func main() {
 	slog.SetDefault(logger)
 
 	ctx := context.Background()
-	gov := buildGovernance(ctx)
+	gov, stopTracing := buildGovernance(ctx)
 	registry := buildProviderRegistry()
 	srv := &http.Server{
 		Addr:              ":" + envOr("ORCA_PORT", "8080"),
 		Handler:           api.NewRouter(gov, registry),
 		ReadHeaderTimeout: 10 * time.Second,
-		WriteTimeout:      60 * time.Second,
-		IdleTimeout:       120 * time.Second,
+		// Provider clients allow up to 120s per call. The write deadline must
+		// exceed that so a slow completion is returned (or a 502 on provider
+		// timeout) instead of the connection being dropped with no response.
+		WriteTimeout: 150 * time.Second,
+		IdleTimeout:  120 * time.Second,
 	}
 
 	shutdownDone := make(chan struct{})
@@ -64,10 +68,15 @@ func main() {
 			slog.Warn("closing telemetry sink", "err", err)
 		}
 	}
+	stopCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := stopTracing(stopCtx); err != nil {
+		slog.Warn("stopping tracing", "err", err)
+	}
 	slog.Info("gateway stopped")
 }
 
-func buildGovernance(ctx context.Context) *api.Governance {
+func buildGovernance(ctx context.Context) (*api.Governance, func(context.Context) error) {
 	gov := &api.Governance{
 		Limiter: limits.NewMemory(),
 		Policy: limits.Policy{
@@ -75,6 +84,7 @@ func buildGovernance(ctx context.Context) *api.Governance {
 			TokensPerMonth:    envInt("ORCA_DEFAULT_TPM", 100_000_000),
 			Window:            limits.DefaultWindow,
 		},
+		Metrics: observability.NewMetrics(),
 	}
 
 	gov.Keys, gov.Keeper = buildKeyStore(ctx)
@@ -83,14 +93,30 @@ func buildGovernance(ctx context.Context) *api.Governance {
 	gov.Telemetry, gov.Querier = buildTelemetry(ctx)
 	gov.Pricer = telemetry.DefaultPricer()
 
+	tracer, stopTracing := observability.SetupTracing(observability.TracingConfig{
+		Endpoint:    os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"),
+		ServiceName: "orca-gateway",
+		Environment: envOr("ORCA_ENV", "dev"),
+	})
+	gov.Tracer = tracer
+
 	slog.Info("governance configured",
 		"key_store", storeKind(gov.Keys),
 		"limiter", limiterKind(gov.Limiter),
 		"guardrails", guardrailCount(gov.Guardrails),
 		"telemetry", telemetryKind(gov.Telemetry),
+		"metrics", "prometheus",
+		"tracing", tracingKind(gov.Tracer),
 		"default_rpm", gov.Policy.RequestsPerMinute,
 	)
-	return gov
+	return gov, stopTracing
+}
+
+func tracingKind(t *observability.Tracer) string {
+	if t == nil {
+		return "disabled"
+	}
+	return "otlp"
 }
 
 func buildTelemetry(ctx context.Context) (telemetry.Sink, telemetry.Querier) {

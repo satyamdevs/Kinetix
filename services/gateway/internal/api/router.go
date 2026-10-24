@@ -41,6 +41,7 @@ func NewRouter(gov *Governance, registry *provider.Registry) http.Handler {
 
 	r.Get("/healthz", handleHealthz)
 	r.Get("/readyz", handleReadyz)
+	r.Handle("/metrics", metricsOf(gov).Handler())
 
 	v1 := chi.NewRouter()
 	v1.Use(authMiddleware(gov))
