@@ -28,6 +28,8 @@ Unified, OpenAI-compatible LLM orchestration platform — model routing, observa
 cp deploy/.env.example deploy/.env   # dev defaults work as-is
 make dev-deps                        # start postgres + redis + clickhouse
 psql "$POSTGRES_DSN" -f deploy/migrations/001_api_keys.sql   # (optional) governance schema
+# (optional) telemetry schema: 002, then 003 only for pre-trace databases
+clickhouse-client --multiquery < deploy/migrations/002_telemetry_clickhouse.sql
 make run-gateway                     # gateway on :8080
 
 curl localhost:8080/v1/models \
@@ -113,6 +115,32 @@ SELECT model,
  GROUP BY model, day ORDER BY day DESC;
 ```
 
+### Observability
+
+The gateway exposes Prometheus metrics at `GET /metrics` (unauthenticated) and
+emits one structured JSON log line per request with `request_id`, `trace_id`,
+`status`, and `duration_ms`.
+
+| Metric | Labels | Description |
+|---|---|---|
+| `orca_http_requests_total` | route, method, status | Requests handled by the router |
+| `orca_http_request_duration_seconds` | route | Router-level latency histogram |
+| `orca_completions_total` | model, provider, status, key_id | Completed chat requests |
+| `orca_tokens_total` | model, direction | Prompt/completion tokens |
+| `orca_cost_usd_total` | model, provider | Accumulated USD cost |
+| `orca_rejected_requests_total` | reason | Governance/validation rejections |
+| `orca_upstream_requests_total` | provider, model, status | Forwarded provider calls |
+
+Tracing is exported over OTLP HTTP when `OTEL_EXPORTER_OTLP_ENDPOINT` is set
+(e.g. `http://localhost:4318`); unset disables tracing with no request overhead.
+Inbound requests get a span and an `X-Trace-Id` response header, and the trace id
+is stored on each telemetry row (`trace_id` column) so ClickHouse usage data can
+be correlated with traces.
+
+```bash
+curl localhost:8080/metrics | grep '^orca_'
+```
+
 ### Dashboard & Admin API (Phase 5)
 
 Run the dashboard (Next.js on :3000 by default). It reads `ORCA_GATEWAY_URL`
@@ -156,6 +184,7 @@ used so changes persist across restarts.
 - [x] **Phase 4** — Telemetry: ClickHouse ingest, token/cost accounting
 - [x] **Phase 5** — Dashboard: usage charts, latency views, policy editor
 - [x] **Phase 6** — Hardening: <10ms overhead benchmarks, integration tests, CI
+- [x] **Observability** — Prometheus metrics, OTLP traces, structured request logs, trace correlation
 
 ## Testing & Hardening (Phase 6)
 
@@ -179,6 +208,6 @@ failover routing adds negligible latency.
 path: a dead primary upstream transparently falls through to a healthy
 fallback, and requests fail with `502` only when every upstream is down.
 
-**CI** — on push to `main` and pull requests: Go `vet` + `build` + tests +
-overhead benchmark for the gateway, and `next build` (which runs full
-type-checks) for the dashboard.
+**CI** — on push to `main` and pull requests: Go `vet` + `build` + tests
+(with the race detector) + overhead benchmark for the gateway, and `next build`
+(which runs full type-checks) for the dashboard.

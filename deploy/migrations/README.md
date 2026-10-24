@@ -6,6 +6,7 @@ SQL migrations for PostgreSQL (API keys, quotas) and ClickHouse (telemetry schem
 |---|---|---|
 | `001_api_keys.sql` | PostgreSQL | `api_keys` table — governance records (scopes, limits, expiry) |
 | `002_telemetry_clickhouse.sql` | ClickHouse | `chat_completions` telemetry table (usage, cost, latency, TTL 90d) |
+| `003_telemetry_trace_id.sql` | ClickHouse | Adds `trace_id` to pre-existing `chat_completions` tables (fresh DBs get it from `002`) |
 
 ## Applying
 
@@ -16,6 +17,9 @@ psql "$POSTGRES_DSN" -f deploy/migrations/001_api_keys.sql
 
 # ClickHouse native protocol, e.g.
 clickhouse-client --multiquery < deploy/migrations/002_telemetry_clickhouse.sql
+
+# Only needed for databases created before trace correlation was added:
+clickhouse-client --multiquery < deploy/migrations/003_telemetry_trace_id.sql
 ```
 
 The gateway connects to ClickHouse via `CLICKHOUSE_DSN`; when unset it keeps
