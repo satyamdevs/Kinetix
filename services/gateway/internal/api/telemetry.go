@@ -30,7 +30,7 @@ func pricerOf(gov *Governance) *telemetry.Pricer {
 // best-effort: writes happen on a separate goroutine and failures are logged,
 // never propagated to the caller. It also feeds the observability metrics.
 func recordCompletion(ctx context.Context, gov *Governance, status int, streamed bool,
-	model, provider string, usage provider.Usage, latency time.Duration) {
+	model, provider string, usage provider.Usage, latency time.Duration, recErr string) {
 
 	rec := telemetry.Record{
 		RequestID: requestID(ctx),
@@ -40,6 +40,7 @@ func recordCompletion(ctx context.Context, gov *Governance, status int, streamed
 		Streamed:  streamed,
 		Status:    status,
 		TraceID:   observability.TraceID(ctx),
+		Error:     recErr,
 		Usage: telemetry.Usage{
 			PromptTokens:     usage.PromptTokens,
 			CompletionTokens: usage.CompletionTokens,

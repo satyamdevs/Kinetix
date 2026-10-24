@@ -1,6 +1,9 @@
 package telemetry
 
-import "context"
+import (
+	"context"
+	"sync"
+)
 
 // Sink receives telemetry records. Implementations must be safe for
 // concurrent use; writes happen after a request completes and must never
@@ -13,9 +16,9 @@ type Sink interface {
 // Buffer is a bounded in-memory sink used when no ClickHouse is configured
 // (dev) and for tests. It drops oldest records once full.
 type Buffer struct {
+	mu      sync.RWMutex
 	records []Record
 	max     int
-	hi      int
 }
 
 func NewBuffer(max int) *Buffer {
@@ -26,21 +29,28 @@ func NewBuffer(max int) *Buffer {
 }
 
 func (b *Buffer) Record(_ context.Context, r Record) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
 	if len(b.records) == b.max {
 		// drop oldest to bound memory
 		copy(b.records, b.records[1:])
 		b.records = b.records[:b.max-1]
 	}
 	b.records = append(b.records, r)
-	b.hi++
 	return nil
 }
 
 // Len reports how many records are currently held.
-func (b *Buffer) Len() int { return len(b.records) }
+func (b *Buffer) Len() int {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	return len(b.records)
+}
 
 // Snapshot returns a copy of the held records in insertion order.
 func (b *Buffer) Snapshot() []Record {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
 	out := make([]Record, len(b.records))
 	copy(out, b.records)
 	return out

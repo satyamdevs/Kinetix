@@ -3,6 +3,7 @@ package telemetry
 import (
 	"context"
 	"math"
+	"sync"
 	"testing"
 	"time"
 )
@@ -55,6 +56,26 @@ func TestBuffer(t *testing.T) {
 	snap := b.Snapshot()
 	if snap[0].RequestID != "2" || snap[1].RequestID != "3" {
 		t.Fatalf("snapshot order wrong: %+v", snap)
+	}
+}
+
+func TestBufferConcurrent(t *testing.T) {
+	b := NewBuffer(64)
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			for j := 0; j < 100; j++ {
+				_ = b.Record(context.Background(), Record{RequestID: "r", Model: "m"})
+				_ = b.Len()
+				_ = b.Snapshot()
+			}
+		}(i)
+	}
+	wg.Wait()
+	if b.Len() != 64 {
+		t.Fatalf("len = %d, want 64 (bounded)", b.Len())
 	}
 }
 

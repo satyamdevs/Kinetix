@@ -131,7 +131,7 @@ func handleChatCompletions(registry *provider.Registry, gov *Governance) http.Ha
 		resp, err := p.Complete(r.Context(), internalReq)
 		if err != nil {
 			recordCompletion(r.Context(), gov, http.StatusBadGateway, false,
-				model, providerNames(registry, model), provider.Usage{}, time.Since(start))
+				model, providerNames(registry, model), provider.Usage{}, time.Since(start), err.Error())
 			reject(gov, w, http.StatusBadGateway,
 				"Upstream provider error: "+err.Error(),
 				"api_error", "upstream_error", observability.RejectedUpstream)
@@ -148,7 +148,7 @@ func handleChatCompletions(registry *provider.Registry, gov *Governance) http.Ha
 			slog.Warn("quota accounting failed", "err", err)
 		}
 		recordCompletion(r.Context(), gov, http.StatusOK, false,
-			model, providerNames(registry, model), resp.Usage, time.Since(start))
+			model, providerNames(registry, model), resp.Usage, time.Since(start), "")
 
 		out := chatCompletion{
 			ID:                resp.ID,
@@ -351,7 +351,11 @@ func streamChatCompletion(w http.ResponseWriter, r *http.Request, p provider.Pro
 	if err := spendQuota(r, limitOf(gov), int64(streamUsage.TotalTokens)); err != nil {
 		slog.Warn("quota accounting failed", "err", err)
 	}
-	recordCompletion(r.Context(), gov, status, true, model, providerName, streamUsage, time.Since(start))
+	recErr := ""
+	if err != nil {
+		recErr = err.Error()
+	}
+	recordCompletion(r.Context(), gov, status, true, model, providerName, streamUsage, time.Since(start), recErr)
 	_, _ = fmt.Fprintf(w, "data: [DONE]\n\n")
 	flusher.Flush()
 }
