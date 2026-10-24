@@ -25,8 +25,8 @@ jobs:
       - name: Build
         run: go build ./...
 
-      - name: Unit + integration tests
-        run: go test ./... -count=1
+      - name: Unit + integration tests (race)
+        run: go test -race ./... -count=1
 
       - name: Overhead benchmark (Phase 6 target <10ms)
         run: go test ./internal/api/ -run '^$' -bench BenchmarkOverhead -benchtime=100000x
