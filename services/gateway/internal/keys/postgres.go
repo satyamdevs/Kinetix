@@ -64,7 +64,7 @@ ON CONFLICT (id) DO NOTHING`
 
 func (p *Postgres) Create(ctx context.Context, k *Key) error {
 	tag, err := p.pool.Exec(ctx, createSQL,
-		k.ID, k.Name, k.Owner, k.Hash, k.Prefix, k.Scopes, k.Enabled,
+		k.ID, k.Name, k.Owner, k.Hash, k.Prefix, nonNilScopes(k.Scopes), k.Enabled,
 		k.Limit.RequestsPerMinute, k.Limit.TokensPerMonth, k.Limit.TokensPerRequest,
 		k.CreatedAt, k.ExpiresAt,
 	)
@@ -83,6 +83,19 @@ func (p *Postgres) SetEnabled(ctx context.Context, id string, enabled bool) erro
 	tag, err := p.pool.Exec(ctx, enableSQL, id, enabled)
 	if err != nil {
 		return fmt.Errorf("update api key: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+const scopesSQL = `UPDATE api_keys SET scopes = $2 WHERE id = $1`
+
+func (p *Postgres) SetScopes(ctx context.Context, id string, scopes []string) error {
+	tag, err := p.pool.Exec(ctx, scopesSQL, id, nonNilScopes(scopes))
+	if err != nil {
+		return fmt.Errorf("update api key scopes: %w", err)
 	}
 	if tag.RowsAffected() == 0 {
 		return ErrNotFound
@@ -139,4 +152,12 @@ func (p *Postgres) List(ctx context.Context) ([]*Key, error) {
 func (p *Postgres) Close() error {
 	p.pool.Close()
 	return nil
+}
+
+// nonNilScopes avoids writing SQL NULL into the NOT NULL scopes column.
+func nonNilScopes(scopes []string) []string {
+	if scopes == nil {
+		return []string{}
+	}
+	return scopes
 }

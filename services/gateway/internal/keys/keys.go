@@ -53,6 +53,7 @@ type Keeper interface {
 	Store
 	Create(ctx context.Context, k *Key) error
 	SetEnabled(ctx context.Context, id string, enabled bool) error
+	SetScopes(ctx context.Context, id string, scopes []string) error
 	Delete(ctx context.Context, id string) error
 	List(ctx context.Context) ([]*Key, error)
 }
@@ -99,6 +100,7 @@ func Generate(name, owner string, limit Limit, ttl time.Duration) (raw string, k
 		Owner:     owner,
 		Hash:      Hash(raw),
 		Prefix:    raw[:len(KeyPrefix)+5],
+		Scopes:    []string{},
 		Enabled:   true,
 		Limit:     limit,
 		CreatedAt: now,

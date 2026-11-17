@@ -60,7 +60,10 @@ Every `/v1` request passes through the governance pipeline:
    ```bash
    bin/orca-keys -dsn "$POSTGRES_DSN" create \
      -name my-app -owner team-a -rpm 1000 -tpm 50000000 -ttl 720h
+   bin/orca-keys -dsn "$POSTGRES_DSN" create \
+     -name dashboard -owner platform -scopes admin   # admin API / dashboard
    bin/orca-keys -dsn "$POSTGRES_DSN" list          # view keys
+   bin/orca-keys -dsn "$POSTGRES_DSN" set-scopes <id> -scopes admin
    bin/orca-keys -dsn "$POSTGRES_DSN" disable <id>  # revoke temporarily
    bin/orca-keys -dsn "$POSTGRES_DSN" revoke  <id>  # delete permanently
    ```

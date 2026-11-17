@@ -26,7 +26,11 @@ func run(args []string) error {
 	rpm := fs.Int64("rpm", 0, "requests-per-minute cap (0 = unlimited)")
 	tpm := fs.Int64("tpm", 0, "tokens-per-month cap (0 = unlimited)")
 	ttl := fs.Duration("ttl", 0, "key expiry (e.g. 720h); 0 = never")
-	fs.Parse(args)
+	scopes := fs.String("scopes", "", "comma-separated scopes (e.g. admin)")
+	pos, err := parseInterspersed(fs, args)
+	if err != nil {
+		return err
+	}
 
 	if *dsn == "" {
 		return errors.New("no DSN: pass -dsn or set POSTGRES_DSN")
@@ -39,12 +43,26 @@ func run(args []string) error {
 	}
 	defer keeper.Close()
 
-	switch cmd := fs.Arg(0); cmd {
+	cmd := ""
+	if len(pos) > 0 {
+		cmd = pos[0]
+	}
+	arg := func(i int) string {
+		if i < len(pos) {
+			return pos[i]
+		}
+		return ""
+	}
+
+	switch cmd {
 	case "create":
 		raw, k, err := keys.Generate(*name, *owner,
 			keys.Limit{RequestsPerMinute: *rpm, TokensPerMonth: *tpm}, *ttl)
 		if err != nil {
 			return err
+		}
+		if s := splitCSV(*scopes); len(s) > 0 {
+			k.Scopes = s
 		}
 		if err := keeper.Create(ctx, k); err != nil {
 			return err
@@ -80,7 +98,7 @@ func run(args []string) error {
 		return nil
 
 	case "disable", "enable":
-		id := fs.Arg(1)
+		id := arg(1)
 		if id == "" {
 			return errors.New("missing key id")
 		}
@@ -91,8 +109,20 @@ func run(args []string) error {
 		fmt.Printf("key %s now %s\n", id, cmd)
 		return nil
 
+	case "set-scopes":
+		id := arg(1)
+		if id == "" {
+			return errors.New("missing key id")
+		}
+		parsed := splitCSV(*scopes)
+		if err := keeper.SetScopes(ctx, id, parsed); err != nil {
+			return err
+		}
+		fmt.Printf("key %s scopes set to %v\n", id, parsed)
+		return nil
+
 	case "revoke":
-		id := fs.Arg(1)
+		id := arg(1)
 		if id == "" {
 			return errors.New("missing key id")
 		}
@@ -103,8 +133,36 @@ func run(args []string) error {
 		return nil
 
 	default:
-		return errors.New("usage: <create|list|disable|enable|revoke> [id]")
+		return errors.New("usage: <create|list|disable|enable|set-scopes|revoke> [id]")
 	}
+}
+
+// parseInterspersed parses flags that may appear before or after positional
+// arguments (e.g. "-dsn X create -name y"), which the stdlib flag package does
+// not support on its own.
+func parseInterspersed(fs *flag.FlagSet, args []string) ([]string, error) {
+	var positional []string
+	for {
+		if err := fs.Parse(args); err != nil {
+			return nil, err
+		}
+		rest := fs.Args()
+		if len(rest) == 0 {
+			return positional, nil
+		}
+		positional = append(positional, rest[0])
+		args = rest[1:]
+	}
+}
+
+func splitCSV(raw string) []string {
+	var out []string
+	for _, s := range strings.Split(raw, ",") {
+		if s = strings.TrimSpace(s); s != "" {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 func openKeeper(ctx context.Context, dsn string) (keys.Keeper, error) {

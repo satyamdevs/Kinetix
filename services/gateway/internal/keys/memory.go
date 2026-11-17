@@ -67,6 +67,17 @@ func (m *Memory) SetEnabled(_ context.Context, id string, enabled bool) error {
 	return nil
 }
 
+func (m *Memory) SetScopes(_ context.Context, id string, scopes []string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	k, ok := m.byID[id]
+	if !ok {
+		return ErrNotFound
+	}
+	k.Scopes = scopes
+	return nil
+}
+
 func (m *Memory) Delete(_ context.Context, id string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
